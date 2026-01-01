@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "180651392538",
+    "project_id": "sweetstock-app-fase3",
+    "storage_bucket": "sweetstock-app-fase3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:180651392538:android:c625477a83b6f8609e9ba3",
+        "android_client_info": {
+          "package_name": "com.example.sweetstock_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBkddckPt4HqNE8_cq08wB_7sTD5iBtQVc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

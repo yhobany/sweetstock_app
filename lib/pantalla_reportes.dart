@@ -1,325 +1,303 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
-import 'servicio_temporal.dart';
 import 'movimiento_modelo.dart';
+import 'servicio_firebase.dart';
+import 'package:share_plus/share_plus.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 
 class PantallaReportes extends StatefulWidget {
-  final bool abrirCierreInmediato; // true = Modo Cierre Z, false = Modo Consulta
-
-  const PantallaReportes({super.key, this.abrirCierreInmediato = false});
+  final bool abrirCierreInmediato;
+  const PantallaReportes({super.key, required this.abrirCierreInmediato});
 
   @override
   State<PantallaReportes> createState() => _PantallaReportesState();
 }
 
-class _PantallaReportesState extends State<PantallaReportes> {
-  final _servicio = ServicioTemporal();
-  String _filtro = 'hoy';
+class _PantallaReportesState extends State<PantallaReportes> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  final _servicio = ServicioFirebase();
   DateTimeRange? _rangoSeleccionado;
-  List<Movimiento> _datos = [];
-
-  double _ventasEfectivo = 0;
-  double _ventasDigital = 0;
-  double _gastos = 0;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 4, vsync: this);
     if (widget.abrirCierreInmediato) {
-      _filtro = 'hoy';
-    }
-    _cargarReporte();
-  }
-
-  void _cargarReporte() {
-    final movimientos = _servicio.obtenerReporte(_filtro, rangoPersonalizado: _rangoSeleccionado);
-
-    double efectivo = 0;
-    double digital = 0;
-    double gastos = 0;
-
-    for (var m in movimientos) {
-      if (m.tipo == 'venta') {
-        if (m.detalle != null && m.detalle!.startsWith('Ref:')) {
-          digital += m.total;
-        } else {
-          efectivo += m.total;
-        }
-      } else if (m.tipo == 'gasto') {
-        gastos += m.total;
-      }
-    }
-
-    setState(() {
-      _datos = movimientos.reversed.toList();
-      _ventasEfectivo = efectivo;
-      _ventasDigital = digital;
-      _gastos = gastos;
-    });
-  }
-
-  void _cambiarFiltro(String nuevoFiltro) {
-    if (nuevoFiltro == 'rango') {
-      _seleccionarRango();
-    } else {
-      setState(() {
-        _filtro = nuevoFiltro;
-        _rangoSeleccionado = null;
-      });
-      _cargarReporte();
+      _tabController.animateTo(0); // Pestaña "Hoy"
     }
   }
 
-  Future<void> _seleccionarRango() async {
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(2023),
-      lastDate: DateTime.now(),
-      builder: (context, child) {
-        return Theme(
-          data: ThemeData.light().copyWith(
-            colorScheme: const ColorScheme.light(primary: Colors.indigo, onPrimary: Colors.white),
-          ),
-          child: child!,
-        );
-      },
-    );
-
-    if (picked != null) {
-      setState(() {
-        _filtro = 'rango';
-        _rangoSeleccionado = picked;
-      });
-      _cargarReporte();
-    }
-  }
-
-  // --- DESCARGA REAL DE CSV ---
-  Future<void> _descargarReporteReal() async {
+  void _exportarCSV(String periodo) async {
     try {
-      String csvData = _servicio.generarReporteCSV(_filtro, rango: _rangoSeleccionado);
-
-      // 1. Obtener carpeta temporal del sistema
+      String csvData = await _servicio.generarReporteCSV(periodo, rango: _rangoSeleccionado);
       final directory = await getTemporaryDirectory();
-      final fecha = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
-      final path = '${directory.path}/Reporte_SweetStock_$fecha.csv';
-
-      // 2. Escribir archivo
-      final File file = File(path);
+      final file = File('${directory.path}/reporte_$periodo.csv');
       await file.writeAsString(csvData);
-
-      // 3. Abrir menú de compartir
-      await Share.shareXFiles([XFile(path)], text: 'Reporte de Caja ($_filtro)');
-
+      await Share.shareXFiles([XFile(file.path)], text: 'Reporte SweetStock ($periodo)');
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error al exportar: $e"), backgroundColor: Colors.red)
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error al exportar: $e")));
     }
-  }
-
-  void _confirmarCierre() {
-    // Mensaje dinámico
-    String mensaje = "Esto finalizará el turno actual (HOY).";
-    if (_filtro != 'hoy') {
-      mensaje = "Estás cerrando caja de un PERIODO PASADO ($_filtro). Asegúrate de que esto es correcto.";
-    }
-
-    showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text("¿Cerrar Caja Definitivamente?"),
-          content: Text(mensaje),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancelar")),
-            ElevatedButton(
-              onPressed: () {
-                // Aquí se conectaría con Firebase 'closures'
-                Navigator.pop(ctx);
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text("🔒 Cierre Guardado Correctamente"), backgroundColor: Colors.green)
-                );
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-              child: const Text("CONFIRMAR CIERRE"),
-            )
-          ],
-        )
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final currency = NumberFormat.currency(locale: 'es_CO', symbol: '\$', decimalDigits: 0);
-    final efectivoEnCaja = _ventasEfectivo - _gastos;
-    final totalVentas = _ventasEfectivo + _ventasDigital;
-    final esModoCierre = widget.abrirCierreInmediato;
+    return Scaffold(
+      backgroundColor: Colors.grey.shade100,
+      appBar: AppBar(
+        title: Text(
+          widget.abrirCierreInmediato ? "Cierre de Caja (Z)" : "Reportes Financieros",
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: Colors.white,
+        foregroundColor: const Color(0xFFE91E63),
+        elevation: 0,
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: const Color(0xFFE91E63),
+          labelStyle: const TextStyle(fontWeight: FontWeight.bold),
+          unselectedLabelColor: Colors.grey,
+          indicatorColor: const Color(0xFFE91E63),
+          indicatorWeight: 3,
+          tabs: const [Tab(text: "Hoy"), Tab(text: "Semana"), Tab(text: "Mes"), Tab(text: "Rango")],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _VistaReporte(servicio: _servicio, periodo: 'hoy'),
+          _VistaReporte(servicio: _servicio, periodo: 'semana'),
+          _VistaReporte(servicio: _servicio, periodo: 'mes'),
+          _VistaReporte(servicio: _servicio, periodo: 'rango', onRangoSeleccionado: (r) => setState(() => _rangoSeleccionado = r)),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () {
+          String periodo = ['hoy', 'semana', 'mes', 'rango'][_tabController.index];
+          _exportarCSV(periodo);
+        },
+        label: const Text("Exportar CSV", style: TextStyle(fontWeight: FontWeight.bold)),
+        icon: const Icon(Icons.download),
+        backgroundColor: const Color(0xFFE91E63),
+      ),
+    );
+  }
+}
 
-    String textoRango = "RANGO";
-    if (_filtro == 'rango' && _rangoSeleccionado != null) {
-      textoRango = "${DateFormat('dd/MM').format(_rangoSeleccionado!.start)} - ${DateFormat('dd/MM').format(_rangoSeleccionado!.end)}";
+class _VistaReporte extends StatefulWidget {
+  final ServicioFirebase servicio;
+  final String periodo;
+  final Function(DateTimeRange)? onRangoSeleccionado;
+
+  const _VistaReporte({required this.servicio, required this.periodo, this.onRangoSeleccionado});
+
+  @override
+  State<_VistaReporte> createState() => _VistaReporteState();
+}
+
+class _VistaReporteState extends State<_VistaReporte> {
+  DateTimeRange? _rango;
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.periodo == 'rango' && _rango == null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.date_range, size: 80, color: Colors.grey),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: () async {
+                final picked = await showDateRangePicker(
+                    context: context,
+                    firstDate: DateTime(2023),
+                    lastDate: DateTime.now(),
+                    builder: (context, child) {
+                      return Theme(
+                        data: Theme.of(context).copyWith(
+                          colorScheme: const ColorScheme.light(primary: Color(0xFFE91E63), onPrimary: Colors.white),
+                        ),
+                        child: child!,
+                      );
+                    }
+                );
+                if (picked != null) {
+                  setState(() => _rango = picked);
+                  if (widget.onRangoSeleccionado != null) widget.onRangoSeleccionado!(picked);
+                }
+              },
+              icon: const Icon(Icons.calendar_month),
+              label: const Text("Seleccionar Fechas"),
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE91E63), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15)),
+            ),
+          ],
+        ),
+      );
     }
 
-    return Scaffold(
-      backgroundColor: Colors.grey.shade50,
-      appBar: AppBar(
-          title: Text(esModoCierre ? "Cierre de Caja (Z)" : "Reportes"),
-          backgroundColor: esModoCierre ? Colors.red.shade50 : Colors.white,
-          foregroundColor: esModoCierre ? Colors.red : Colors.black,
-          elevation: 0
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return FutureBuilder<List<Movimiento>>(
+      future: widget.servicio.obtenerReporte(widget.periodo, rangoPersonalizado: _rango),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: Color(0xFFE91E63)));
+        final lista = snapshot.data!;
+
+        if (lista.isEmpty) {
+          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.inbox, size: 60, color: Colors.grey.shade300), const SizedBox(height: 10), Text("Sin movimientos", style: TextStyle(color: Colors.grey.shade500))]));
+        }
+
+        double totalVenta = 0;
+        double totalCosto = 0;
+        double totalGastoOperativo = 0;
+
+        for (var m in lista) {
+          if (m.tipo == 'venta') {
+            totalVenta += m.total;
+            totalCosto += m.costo;
+          } else if (m.tipo == 'gasto') {
+            totalGastoOperativo += m.total;
+          }
+          // Nota: m.tipo == 'entrada' NO se suma aquí porque es movimiento de Activo (Inventario), no de PyG.
+        }
+
+        double utilidadBruta = totalVenta - totalCosto;
+        double utilidadNeta = utilidadBruta - totalGastoOperativo;
+
+        return Column(
           children: [
-            // 1. FILTROS (SIEMPRE VISIBLES)
+            // --- ESTADO DE RESULTADOS ---
             Container(
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.grey.shade200)),
-              child: Row(
-                  children: [
-                    _tabFiltro("HOY", 'hoy'),
-                    _tabFiltro("SEMANA", 'semana'),
-                    _tabFiltro("MES", 'mes'),
-                    _tabFiltro(textoRango, 'rango'),
-                  ]
+              padding: const EdgeInsets.all(15),
+              margin: const EdgeInsets.all(15),
+              decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(15),
+                  boxShadow: [BoxShadow(color: Colors.grey.shade200, blurRadius: 10, offset: const Offset(0,5))]
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      _cardResumen("Ventas Totales", totalVenta, Colors.blue, Icons.attach_money),
+                      Container(width: 1, height: 50, color: Colors.grey.shade200),
+                      _cardResumen("Utilidad Bruta", utilidadBruta, Colors.green, Icons.monetization_on),
+                    ],
+                  ),
+                  const Divider(height: 20),
+                  Row(
+                    children: [
+                      _cardResumen("Gastos Operativos", totalGastoOperativo, Colors.orange, Icons.money_off),
+                      Container(width: 1, height: 50, color: Colors.grey.shade200),
+                      _cardResumen("Utilidad Neta", utilidadNeta, utilidadNeta >= 0 ? const Color(0xFFE91E63) : Colors.red, Icons.account_balance),
+                    ],
+                  ),
+                ],
               ),
             ),
 
-            const SizedBox(height: 20),
-
-            // 2. TARJETA DE BALANCE (Roja si es cierre, Negra si es reporte)
-            if (esModoCierre)
-              _tarjetaCierre(currency, totalVentas, efectivoEnCaja)
-            else
-              _tarjetaReporte(currency, efectivoEnCaja),
-
-            const SizedBox(height: 20),
-
-            // 3. BOTONES DE ACCIÓN (Solo visibles en Modo Cierre Z)
-            if (esModoCierre) ...[
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _descargarReporteReal,
-                  icon: const Icon(Icons.download),
-                  label: const Text("Descargar Archivo (CSV)"),
-                  style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 15),
-                      side: const BorderSide(color: Colors.blue),
-                      foregroundColor: Colors.blue,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
-                  ),
-                ),
-              ),
-              const SizedBox(height: 15),
-              SizedBox(
-                width: double.infinity,
-                height: 55,
-                child: ElevatedButton.icon(
-                  onPressed: _confirmarCierre,
-                  icon: const Icon(Icons.lock),
-                  label: const Text("CERRAR CAJA"),
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
-                  ),
-                ),
-              ),
-            ],
-
-            const SizedBox(height: 20),
-
-            // 4. LISTA
-            Text("Detalle de Movimientos", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
-            const SizedBox(height: 10),
-
-            Container(
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(15), border: Border.all(color: Colors.grey.shade200)),
-              child: _datos.isEmpty
-                  ? const Padding(padding: EdgeInsets.all(20), child: Center(child: Text("Sin movimientos", style: TextStyle(color: Colors.grey))))
-                  : ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _datos.length,
-                separatorBuilder: (_,__) => const Divider(height: 1),
+            // --- LISTA DE MOVIMIENTOS MEJORADA VISUALMENTE ---
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 5),
+                itemCount: lista.length,
                 itemBuilder: (context, index) {
-                  final m = _datos[index];
-                  Color color = m.tipo == 'venta' ? Colors.green : m.tipo == 'gasto' ? Colors.red : Colors.blue;
-                  return ListTile(
-                    dense: true,
-                    title: Text(m.nombreProducto, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(DateFormat('HH:mm').format(m.fecha) + (m.detalle != null ? " • ${m.detalle}" : "")),
-                    trailing: Text(
-                        m.tipo == 'gasto' ? "-${currency.format(m.total)}" : currency.format(m.total),
-                        style: TextStyle(fontWeight: FontWeight.bold, color: color)
+                  final m = lista[index];
+
+                  // --- LÓGICA VISUAL MEJORADA ---
+                  bool esVenta = m.tipo == 'venta';
+                  bool esEntrada = m.tipo == 'entrada'; // Nuevo caso
+                  bool esGasto = m.tipo == 'gasto';
+
+                  Color colorBase;
+                  IconData icono;
+                  String etiqueta;
+
+                  if (esVenta) {
+                    colorBase = Colors.green;
+                    icono = Icons.shopping_bag;
+                    etiqueta = m.nroVenta != null ? "#${m.nroVenta}" : "Venta";
+                  } else if (esEntrada) {
+                    colorBase = Colors.blue; // Azul para inventario (Activo)
+                    icono = Icons.inventory_2;
+                    etiqueta = "COMPRA";
+                  } else {
+                    colorBase = Colors.orange; // Naranja para gastos (Pérdida)
+                    icono = Icons.trending_down;
+                    etiqueta = "GASTO";
+                  }
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border(left: BorderSide(color: colorBase, width: 4)),
+                        boxShadow: [BoxShadow(color: Colors.grey.shade100, blurRadius: 4, offset: const Offset(0,2))]
+                    ),
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+                      leading: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                            color: colorBase.withOpacity(0.1),
+                            shape: BoxShape.circle
+                        ),
+                        child: Text(etiqueta, style: TextStyle(color: colorBase, fontWeight: FontWeight.bold, fontSize: 10)),
+                      ),
+                      title: Text(m.nombreProducto, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 4),
+                          Text(DateFormat('hh:mm a').format(m.fecha), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                          if(m.detalle != null) Text(m.detalle!, style: TextStyle(color: Colors.grey.shade400, fontSize: 11))
+                        ],
+                      ),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            "\$${NumberFormat.currency(locale: 'es_CO', symbol: '', decimalDigits: 0).format(m.total)}",
+                            style: TextStyle(color: colorBase, fontWeight: FontWeight.bold, fontSize: 16),
+                          ),
+                          if (esVenta && m.costo > 0)
+                            Text(
+                              "Ganancia: \$${(m.total - m.costo).toStringAsFixed(0)}",
+                              style: TextStyle(fontSize: 10, color: Colors.green.shade300),
+                            )
+                        ],
+                      ),
                     ),
                   );
                 },
               ),
-            )
+            ),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
 
-  Widget _tarjetaReporte(NumberFormat currency, double efectivoEnCaja) {
-    String titulo = "Balance ($_filtro)";
-    if (_filtro == 'rango' && _rangoSeleccionado != null) titulo = "Rango Personalizado";
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(color: const Color(0xFF1a1a1a), borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))]),
-      child: Column(children: [
-        Row(children: [const Icon(Icons.pie_chart, color: Colors.white70, size: 20), const SizedBox(width: 10), Text(titulo, style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold))]),
-        const SizedBox(height: 20),
-        _filaBalance("Efectivo", currency.format(efectivoEnCaja), Colors.greenAccent),
-        _filaBalance("Digital", currency.format(_ventasDigital), Colors.purpleAccent),
-        const Divider(color: Colors.white24),
-        _filaBalance("Gastos", "- ${currency.format(_gastos)}", Colors.redAccent, esSmall: true),
-      ]),
-    );
-  }
-
-  Widget _tarjetaCierre(NumberFormat currency, double totalVentas, double efectivoEnCaja) {
-    String periodoCierre = _filtro.toUpperCase();
-    if (_filtro == 'rango') periodoCierre = "RANGO";
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.red.shade100), boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.05), blurRadius: 10)]),
+  Widget _cardResumen(String label, double valor, Color color, IconData icon) {
+    return Expanded(
       child: Column(
         children: [
-          Text("CIERRE DE CAJA ($periodoCierre)", style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1)),
-          const SizedBox(height: 15),
-          _filaResumen("Ventas Totales", currency.format(totalVentas), esBold: true, tamano: 20),
-          const Divider(),
-          _filaResumen("(+) Efectivo Entrante", currency.format(_ventasEfectivo), color: Colors.green),
-          _filaResumen("(-) Gastos Registrados", "- ${currency.format(_gastos)}", color: Colors.red),
-          const Divider(),
-          _filaResumen("= EFECTIVO EN CAJÓN", currency.format(efectivoEnCaja), esBold: true, color: Colors.black, tamano: 18),
-          const SizedBox(height: 15),
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: Colors.purple.shade50, borderRadius: BorderRadius.circular(10)),
-            child: _filaResumen("Bancos / Digital", currency.format(_ventasDigital), color: Colors.purple),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 4),
+              Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+            ],
           ),
+          const SizedBox(height: 4),
+          Text(
+              NumberFormat.compact().format(valor),
+              style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18)
+          )
         ],
       ),
     );
   }
-
-  Widget _tabFiltro(String titulo, String valor) {
-    bool activo = _filtro == valor;
-    return Expanded(child: GestureDetector(onTap: () => _cambiarFiltro(valor), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: activo ? Colors.indigo : Colors.transparent, borderRadius: BorderRadius.circular(8)), child: Text(titulo, textAlign: TextAlign.center, style: TextStyle(color: activo ? Colors.white : Colors.grey, fontWeight: FontWeight.bold, fontSize: 10)))));
-  }
-  Widget _filaBalance(String label, String valor, Color color, {bool esSmall = false}) { return Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Row(children: [Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)), const SizedBox(width: 10), Text(label, style: const TextStyle(color: Colors.white70))]), Text(valor, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: esSmall ? 14 : 18))])); }
-  Widget _filaResumen(String label, String valor, {bool esBold = false, Color? color, double tamano = 14}) { return Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(label, style: TextStyle(color: Colors.grey.shade700, fontSize: 14)), Text(valor, style: TextStyle(fontWeight: esBold ? FontWeight.bold : FontWeight.normal, color: color ?? Colors.black, fontSize: tamano))])); }
 }
