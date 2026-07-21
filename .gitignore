@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Documentación interna (no subir al repo)
+plan_*.md
+analisis_*.md
+learning_proposal.md
